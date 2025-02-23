@@ -1,0 +1,14 @@
+# 忽略 Python 相关文件
+**/__pycache__/
+*.pyc
+
+# 忽略环境配置
+.env
+**/venv/
+**/markitdown_env/
+
+# 忽略数据文件夹
+**/markdown_files/
+**/pdfs/
+**/存储/
+**/markdown_output/
