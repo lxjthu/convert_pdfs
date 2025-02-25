@@ -3,15 +3,42 @@ import dashscope
 from dashscope import Generation
 import re
 import json
+from pathlib import Path
+from typing import List, Dict, Optional, Union
 
 class PaperFormatter:
-    def __init__(self):
-        # 从环境变量获取 API key
+    # 定义可用的功能特性
+    FEATURES = {
+        'title_format': '标题格式化',
+        'line_merge': '行合并',
+        'image_adjust': '图片位置调整',
+        'save_file': '保存文件',
+        'batch_process': '批量处理'
+    }
+    
+    def __init__(self, features: Optional[List[str]] = None):
+        """
+        初始化格式化器
+        Args:
+            features: 需要启用的功能列表，可选项：
+                - 'title_format': 标题格式化
+                - 'line_merge': 行合并
+                - 'image_adjust': 图片位置调整
+                - 'save_file': 保存文件
+                - 'batch_process': 批量处理
+        """
+        # API 初始化
         self.api_key = os.environ.get('DASHSCOPE_API_KEY')
         if not self.api_key:
             raise ValueError("请在环境变量中设置 DASHSCOPE_API_KEY")
         dashscope.api_key = self.api_key
-        self.model = 'qwen-max'  # 可选: qwen-max, qwen-plus, qwen-turbo
+        self.model = 'qwen-max'
+
+        # 功能启用配置
+        self.features = set(features) if features else set(self.FEATURES.keys())
+        invalid_features = self.features - set(self.FEATURES.keys())
+        if invalid_features:
+            raise ValueError(f"不支持的功能: {invalid_features}")
     
     def set_model(self, model_name):
         """切换使用的模型"""
@@ -27,32 +54,80 @@ class PaperFormatter:
             messages=messages
         )
         return response.output.text
+    
+    def _split_into_batches(self, text, batch_size=4000):
+        """将文本分割成批次"""
+        batches = []
+        paragraphs = text.split('\n\n')
+        current_batch = []
+        current_size = 0
+        
+        for para in paragraphs:
+            para_size = len(para)
+            if current_size + para_size > batch_size and current_batch:
+                # 当前批次达到大小限制，保存并开始新批次
+                batches.append('\n\n'.join(current_batch))
+                current_batch = [para]
+                current_size = para_size
+            else:
+                current_batch.append(para)
+                current_size += para_size
+        
+        # 添加最后一个批次
+        if current_batch:
+            batches.append('\n\n'.join(current_batch))
+        
+        return batches
+    
+    def _process_batch(self, text):
+        """处理单个批次的文本"""
+        processed_text = text
+        
+        if 'line_merge' in self.features:
+            processed_text = self._merge_lines(processed_text)
+        
+        if 'title_format' in self.features:
+            processed_text = self._process_batch_titles(processed_text)
+        
+        if 'image_adjust' in self.features:
+            processed_text = self._adjust_images(processed_text)
+            
+        return processed_text
+
+    def _merge_batches(self, batches):
+        """智能合并处理后的批次"""
+        merged_text = []
+        
+        for i, batch in enumerate(batches):
+            if i > 0:
+                # 检查是否需要添加分隔符
+                if not batch.strip().startswith('#') and not merged_text[-1].strip().endswith('\n\n'):
+                    merged_text.append('\n\n')
+            merged_text.append(batch.strip())
+        
+        return '\n\n'.join(merged_text)
+
     def format_text(self, text):
         """处理文本格式"""
         print("\n=== 开始处理文本 ===")
         
         # 1. 分批处理长文本
-        batches = self._split_into_batches(text)
-        print(f"\n共分成 {len(batches)} 个批次")
-        processed_batches = []
-        
-        for i, batch in enumerate(batches):
-            print(f"\n处理第 {i+1} 个批次:")
-            # 2. 合并错误换行
-            merged_text = self._merge_lines(batch)
+        if 'batch_process' in self.features:
+            batches = self._split_into_batches(text)
+            print(f"\n共分成 {len(batches)} 个批次")
+            processed_batches = []
             
-            # 3. 直接从文本中提取标题并立即格式化
-            formatted_batch = self._process_batch_titles(merged_text)
+            for i, batch in enumerate(batches, 1):
+                print(f"\n处理第 {i+1} 个批次:")
+                processed_batch = self._process_batch(batch)
+                processed_batches.append(processed_batch)
             
-            # 4. 调整图片位置
-            formatted_batch = self._adjust_images(formatted_batch)
-            processed_batches.append(formatted_batch)
-        
-        # 5. 合并所有处理后的批次
-        result = self._merge_batches(processed_batches)
+            result = self._merge_batches(processed_batches)
+        else:
+            result = self._process_batch(text)
+
         print("\n=== 文本处理完成 ===")
         return result
-
     def _process_batch_titles(self, text):
         """处理单个批次中的标题"""
         print("\n正在提取并处理标题...")
@@ -105,49 +180,11 @@ class PaperFormatter:
         result = re.sub(r'\n{3,}', '\n\n', result)
         return result
         
-
-
-    # 可以删除以下不再需要的方法：
-    # - _mark_titles_in_text
-    # - _format_with_titles
-
-    def _split_into_batches(self, text, batch_size=4000):
-        """将文本分割成批次"""
-        batches = []
-        paragraphs = text.split('\n\n')
-        current_batch = []
-        current_size = 0
-        
-        for para in paragraphs:
-            para_size = len(para)
-            if current_size + para_size > batch_size and current_batch:
-                # 当前批次达到大小限制，保存并开始新批次
-                batches.append('\n\n'.join(current_batch))
-                current_batch = [para]
-                current_size = para_size
-            else:
-                # 添加段落到当前批次
-                current_batch.append(para)
-                current_size += para_size
-        
-        # 添加最后一个批次
-        if current_batch:
-            batches.append('\n\n'.join(current_batch))
-        
-        return batches
-    
-    def _merge_batches(self, batches):
-        """智能合并处理后的批次"""
-        # 检查标题的连续性
-        merged_text = []
-        for i, batch in enumerate(batches):
-            if i > 0:
-                # 检查是否需要添加分隔符
-                if not batch.startswith('#') and not merged_text[-1].endswith('\n\n'):
-                    merged_text.append('\n\n')
-            merged_text.append(batch)
-        
-        return ''.join(merged_text)
+    def process_file(self, input_file: Union[str, Path], output_file: Optional[Union[str, Path]] = None) -> str:
+        """处理单个文件"""
+        input_file = Path(input_file)
+        if not input_file.exists():
+            raise FileNotFoundError(f"文件不存在: {input_file}")
     def _analyze_structure(self, text):
         """使用通义千问分析文章结构"""
         messages = [
@@ -170,7 +207,6 @@ class PaperFormatter:
         )
         
         return response.output.text
-    
     def _extract_json_from_response(self, response):
         """从响应中提取 JSON 部分"""
         # 尝试查找 ```json 和 ``` 之间的内容
@@ -267,7 +303,6 @@ class PaperFormatter:
             
         return '\n'.join(merged_lines)
  
-
     def _replace_titles_in_content(self, content, formatted_titles):
         """在文档中替换标题"""
         result = content
@@ -393,19 +428,41 @@ def main():
     # 初始化时不再传入 api_key
     formatter = PaperFormatter()
     
-    input_file = r"E:\pdf文档转换\markdown_files\“沉浸式动员”_乡村振兴中农村党组织动员农民的路径创新——基于两个村庄的案例分析.md"
+    # 使用 Path 对象处理路径
+    input_dir = Path(r"E:\pdf文档转换\markdown_files")
     
-    # 读取文件
-    with open(input_file, 'r', encoding='utf-8') as f:
-        content = f.read()
+    # 确保输入目录存在
+    if not input_dir.exists():
+        print(f"输入目录不存在: {input_dir}")
+        return
     
-    # 格式化文本
-    formatted_content = formatter.format_text(content)
+    # 获取所有 markdown 文件
+    markdown_files = list(input_dir.glob("*.md"))
+    if not markdown_files:
+        print(f"未找到任何 markdown 文件在: {input_dir}")
+        return
     
-    # 保存结果
-    output_file = input_file.replace('.md', '_formatted.md')
-    with open(output_file, 'w', encoding='utf-8') as f:
-        f.write(formatted_content)
+    # 处理每个文件
+    for input_file in markdown_files:
+        try:
+            print(f"\n处理文件: {input_file.name}")
+            
+            # 读取文件
+            with open(input_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # 格式化文本
+            formatted_content = formatter.format_text(content)
+            
+            # 保存结果
+            output_file = input_file.with_stem(f"{input_file.stem}_formatted")
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(formatted_content)
+                
+            print(f"完成: {output_file.name}")
+            
+        except Exception as e:
+            print(f"处理文件 {input_file.name} 时出错: {e}")
 
 if __name__ == "__main__":
     main()

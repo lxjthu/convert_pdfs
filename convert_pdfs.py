@@ -24,55 +24,12 @@ class PDFToMarkdownConverter:
         self.table_counter = 1
         # 调试开关
         self.debug = debug
-        # 初始化通义千问客户端
-        self.client = OpenAI(
-            api_key=os.environ.get('DASHSCOPE_API_KEY'),
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
-        )
+        
     
     def debug_print(self, *args, **kwargs):
         """统一的调试信息打印函数"""
         if self.debug:
-            print(*args, **kwargs)
-    
-    def ask_qwen_analyze_text(self, text, prev_text=None, next_text=None):
-        """使用通义千问分析文本段落"""
-        try:
-            # 构建上下文信息
-            context = ""
-            if prev_text:
-                context += f"上一段：{prev_text}\n"
-            context += f"当前文本：{text}\n"
-            if next_text:
-                context += f"下一段：{next_text}"
-
-            self.debug_print("\n=== 文本分析 ===")
-            self.debug_print(f"分析文本：{text[:100]}...")
-            
-            completion = self.client.chat.completions.create(
-                model="qwen-turbo",
-                messages=[
-                    {'role': 'system', 'content': '你是一个文本分析助手，需要判断给定文本的性质和关系，你擅长判断文本之间的连贯性，并理解，如果是标题，文本最前面应该有编号。'},
-                    {'role': 'user', 'content': f'''请分析以下文本：
-{context}
-
-请回答以下问题（只需回答数字）：
-1. 当前文本是否为标题？（1是，0否）
-2. 如果不是标题，是否应该与上一段合并？（1是，0否）
-3. 如果不是标题，是否应该与下一段合并？（1是，0否）'''}
-                ]
-            )
-            response = completion.choices[0].message.content.strip()
-            results = [int(x) for x in response.split('\n') if x.isdigit()]
-            
-            self.debug_print(f"分析结果：是标题={bool(results[0])}, 向上合并={bool(results[1])}, 向下合并={bool(results[2])}")
-            
-            if len(results) == 3:
-                return results
-            return [0, 0, 0]  # 默认值
-        except Exception as e:
-            self.debug_print(f"通义千问API调用失败: {e}")
-            return [0, 0, 0]
+            print(*args, **kwargs)  
 
     def save_image(self, image_data, pdf_name):
         """保存图片并返回相对路径"""
@@ -216,38 +173,6 @@ class PDFToMarkdownConverter:
         self.debug_print(f"位置 y={y_pos} {'在' if result else '不在'}正文区域内")
         return result
 
-    def merge_with_ai(self, paragraphs):
-        """使用AI分析并合并段落"""
-        self.debug_print("\n=== AI分析合并 ===")
-        final_text = []
-        
-        for i, text in enumerate(paragraphs):
-            # 检查是否为单行文本（不包含句号等标点）
-            if len(text) <= 30 and not any(p in text for p in '.。!！?？'):
-                # 获取上下文时包含标题
-                prev_text = paragraphs[i-1] if i > 0 else None
-                next_text = paragraphs[i+1] if i < len(paragraphs)-1 else None
-                
-                self.debug_print(f"\n分析单行文本：{text}")
-                self.debug_print(f"上文：{prev_text[:50] if prev_text else 'None'}...")
-                self.debug_print(f"下文：{next_text[:50] if next_text else 'None'}...")
-                
-                results = self.ask_qwen_analyze_text(text, prev_text, next_text)
-                
-                if results[1] and prev_text and len(final_text) > 0:
-                    # 向上合并，但如果上一段是标题则不合并
-                    if not self.is_title_or_list(prev_text):
-                        final_text[-1] = final_text[-1] + ' ' + text
-                        self.debug_print(f"向上合并：{text}")
-                    else:
-                        final_text.append(text)
-                        self.debug_print(f"上文是标题，不合并：{text}")
-                else:
-                    final_text.append(text)
-            else:
-                final_text.append(text)
-        
-        return final_text
     def merge_lines(self, text_blocks):
         """合并文本行，处理换行和分段"""
         self.debug_print("\n=== 合并文本行 ===")
@@ -262,6 +187,25 @@ class PDFToMarkdownConverter:
                 i += 1
                 continue
                 
+            # 检查是否为数字编号行
+            number_match = re.match(r'^__NUMBER_LINE__(\d+)__$', line)
+            if number_match and i > 0 and i < len(lines) - 1:
+                prev_line = merged_text[-1] if merged_text else ''
+                next_line = self.clean_text_line(lines[i+1])
+                
+                # 如果上一行以标点结尾，且下一行存在
+                if self.is_sentence_end(prev_line):
+                    self.debug_print(f"合并数字编号 {number_match.group(1)} 与下一行")
+                    # 将数字与下一行合并
+                    if current_paragraph:
+                        merged_text.append(''.join(current_paragraph))
+                        current_paragraph = []
+                    merged_text.append(prev_line)
+                    current_paragraph.append(f"{number_match.group(1)}{next_line}")
+                    i += 2  # 跳过下一行
+                    continue
+            
+
             # 如果是标题，直接添加并继续
             if self.is_title_or_list(line):
                 if current_paragraph:
@@ -307,6 +251,9 @@ class PDFToMarkdownConverter:
         if not text:
             return ""
         
+        # 1. 移除特殊格式标记
+        text = re.sub(r'#[":]?#\s*', '', text)  # 移除 #"# 等标记
+        text = re.sub(r'#{3,}', '', text)  # 移除多余的 ###
         # 1. 统一全角和半角字符
         text = text.replace('　', '  ')  # 全角空格转换为两个半角空格
         
@@ -332,6 +279,7 @@ class PDFToMarkdownConverter:
         text = re.sub(r'(?<=[\u4e00-\u9fa5])[ \t]+(?=[\u4e00-\u9fa5])', '', text)  # 移除中文之间的空格
         text = re.sub(r'(?<=[\u4e00-\u9fa5])[ \t]+(?=[a-zA-Z0-9])', '', text)  # 移除中文和英文/数字之间的空格
         text = re.sub(r'(?<=[a-zA-Z0-9])[ \t]+(?=[\u4e00-\u9fa5])', '', text)  # 移除英文/数字和中文之间的空格
+        text = re.sub(r'(?<=\d)[ \t]+(?=\d)', '', text)  # 移除数字之间的空格
         
         # 5. 修复标点符号
         text = re.sub(r'([,.:;?!()（）《》\"\'“”‘’「」『』、，。：；！？\x5b\x5d【】—.])[ \t]+', r'\1', text)  # 移除标点后的空格
@@ -340,13 +288,41 @@ class PDFToMarkdownConverter:
         # 6. 统一空格
         text = re.sub(r'\s+', ' ', text)
         text = text.strip()
+
+        # 检查是否为引用数字行
+        ref_number_match = re.match(r'^\s*\[(\d+)\]\s*$', text)
+        if ref_number_match:
+            self.debug_print(f"检测到引用数字：[{ref_number_match.group(1)}]")
+            return f"__REF_NUMBER__{ref_number_match.group(1)}__"
+        # 检查是否为数字编号行
+        number_patterns = [
+            r'^\s*(\d+)\s*$',           # 匹配单独的数字
+            r'^\s*(\d+)\.\s*$',         # 匹配数字加点
+            r'^\s*[（(](\d+)[)）]\s*$'   # 匹配带括号的数字
+        ]
         
+        for pattern in number_patterns:
+            number_match = re.match(pattern, text)
+            if number_match:
+                self.debug_print(f"检测到数字编号：{text.strip()}")
+                return f"__NUMBER_LINE__{number_match.group(1)}__"
         # 7. 恢复段落开始的缩进
         if is_paragraph_start and not title_match:  # 标题不添加缩进
             text = '  ' + text
         
         return text
 
+    def clean_text(self, text):
+        """最终清理文本"""
+        # 1. 清理所有特殊标记
+        text = re.sub(r'__NUMBER_LINE__(\d+)__', r'\1', text)  # 清理数字行标记
+        text = re.sub(r'__REF_NUMBER__(\d+)__', r'[\1]', text)  # 清理引用标记
+        
+        # 2. 清理多余的换行和空格
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = re.sub(r' {2,}', ' ', text)
+        return text.strip()
+    
     def is_sentence_end(self, text):
         """判断是否是句子结尾"""
         end_punctuation = '。!！?？'
@@ -444,14 +420,21 @@ class PDFToMarkdownConverter:
                                     for span in line["spans"]:
                                         text = span["text"].strip()
                                         if text:
-                                            font_size = span["size"]
-                                            processed_text = self.detect_heading(text, font_size)
-                                            text_content.append(processed_text)
+                                            # 移除字体大小判断，直接添加文本
+                                            text_content.append(text)
                                 if text_content:
                                     page_text.append({
                                         'content': '\n'.join(text_content),
                                         'y_pos': y_pos
                                     })
+
+                # 合并文本块
+                if page_text:
+                    # 按垂直位置排序文本块
+                    page_text.sort(key=lambda x: x['y_pos'])
+                    # 先进行基础合并
+                    merged_paragraphs = self.merge_lines('\n'.join(item['content'] for item in page_text))
+                    # 再进行AI分析合并
                 
                 # 处理收集到的文本
                 if page_text:
@@ -520,22 +503,8 @@ class PDFToMarkdownConverter:
             return True
         return False
     
-    def clean_text(self, text):
-        """清理提取的文本"""
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        text = re.sub(r' {2,}', ' ', text)
-        return text.strip()
     
     def detect_heading(self, text, font_size):
-        """根据字体大小判断标题级别"""
-        if font_size >= 18:
-            return f"# {text}"
-        elif font_size >= 16:
-            return f"## {text}"
-        elif font_size >= 14:
-            return f"### {text}"
-        elif font_size >= 12:
-            return f"#### {text}"
         return text
 
     def convert_all_pdfs(self):
@@ -556,7 +525,7 @@ class PDFToMarkdownConverter:
 def main():
     current_dir = Path(__file__).parent
     pdf_dir = current_dir / "pdfs"
-    markdown_dir = current_dir / "markdown_files"
+    markdown_dir = current_dir / "markdownoutput"
     # 创建转换器实例时启用调试模式
     converter = PDFToMarkdownConverter(pdf_dir, markdown_dir, debug=True)
     converter.convert_all_pdfs()
